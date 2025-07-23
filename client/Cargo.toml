@@ -1,0 +1,10 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json"] } # High level HTTP client, batteries included
+tokio = { version = "1", features = ["full"] } # Asynchronous runtime providing core components for writing fast, non-blocking network applications.
+serde = { version = "1.0", features = ["derive"] } # For serialization, turning ds into json/yaml/toml and vice versa
+serde_json = "1.0" # Specific serialization dependency for json

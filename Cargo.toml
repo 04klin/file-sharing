@@ -1,0 +1,7 @@
+# This tells cargo that this current toml is the root of the workspace. Here are three distinct crates.
+[workspace]
+members = [
+  "merkle_tree",
+  "client",
+  "server",
+]
