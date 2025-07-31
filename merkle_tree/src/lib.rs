@@ -1,5 +1,3 @@
-//! Write a Merkle tree implementation that supports proofs and multiproofs.
-
 // Suppress wornings (especially for early development)
 #![allow(dead_code)]
 #![allow(unused_variables)]
@@ -12,9 +10,10 @@ use std::{
   hash::{Hash, Hasher},
   mem,
 };
-
-/// We'll use Rust's built-in hashing which returns a u64 type.
-/// This alias just helps us understand when we're treating the number as a hash
+/*
+We'll use Rust's built-in hashing which returns a u64 type.
+This alias just helps us understand when we're treating the number as a hash
+*/
 pub type HashValue = u64;
 
 /// Helper function that makes the hashing interface easier to understand.
@@ -24,9 +23,11 @@ pub fn hash<T: Hash>(t: &T) -> HashValue {
   s.finish()
 }
 
-/// Given a vector of data blocks this function adds padding blocks to the end
-/// until the length is a power of two which is needed for Merkle trees.
-/// The padding value should be the empty string "".
+/*
+Given a vector of data blocks this function adds padding blocks to the end
+until the length is a power of two which is needed for Merkle trees.
+The padding value should be the empty string "".
+*/
 pub fn pad_base_layer(blocks: &mut Vec<&str>) {
   let n = blocks.len();
 
@@ -39,11 +40,13 @@ pub fn pad_base_layer(blocks: &mut Vec<&str>) {
   blocks.resize(padding_length, "");
 }
 
-/// Helper function to combine two hashes and compute the hash of the combination.
-/// This will be useful when building the intermediate nodes in the Merkle tree.
-///
-/// Our implementation will hex-encode the hashes (as little-endian uints) into strings, concatenate
-/// the strings, and then hash that string.
+/*
+Helper function to combine two hashes and compute the hash of the combination.
+This will be useful when building the intermediate nodes in the Merkle tree.
+
+Our implementation will hex-encode the hashes (as little-endian uints) into strings, concatenate
+the strings, and then hash that string.
+*/
 pub fn concatenate_hash_values(left: HashValue, right: HashValue) -> HashValue {
   let combined = format!("{}{}", encode(left.to_le_bytes()), encode(right.to_le_bytes()));
   hash(&combined)
@@ -70,14 +73,16 @@ fn calculate_merkle_root_helper(hashes: Vec<HashValue>) -> HashValue {
   }
 }
 
-/// Calculates the Merkle root of a sentence. We consider each word in the sentence to
-/// be one block. Words are separated by one or more spaces.
-///
-/// Example:
-/// Sentence: "You trust me, right?"
-/// "You", "trust", "me," "right?"
-/// Notice that the punctuation like the comma and exclamation point are included in the words
-/// but the spaces are not.
+/*
+Calculates the Merkle root of a sentence. We consider each word in the sentence to
+be one block. Words are separated by one or more spaces.
+
+Example:
+Sentence: "You trust me, right?"
+"You", "trust", "me," "right?"
+Notice that the punctuation like the comma and exclamation point are included in the words
+but the spaces are not.
+*/
 pub fn calculate_merkle_root(sentence: &str) -> HashValue {
   // Separate sentence by whitespace
   let mut words: Vec<&str> = sentence.split_whitespace().collect();
@@ -92,9 +97,11 @@ pub fn calculate_merkle_root(sentence: &str) -> HashValue {
   calculate_merkle_root_helper(hashes)
 }
 
-/// A representation of a sibling node along the Merkle path from the data
-/// to the root. It is necessary to specify which side the sibling is on
-/// so that the hash values can be combined in the same order.
+/*
+A representation of a sibling node along the Merkle path from the data
+to the root. It is necessary to specify which side the sibling is on
+so that the hash values can be combined in the same order.
+*/
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SiblingNode {
   Left(HashValue),
@@ -104,16 +111,20 @@ pub enum SiblingNode {
 /// A proof is just an alias for a vec of sibling nodes.
 pub type MerkleProof = Vec<SiblingNode>;
 
-/// Generates a Merkle proof that one particular word is contained
-/// in the given sentence. You provide the sentence and the index of the word
-/// which you want a proof.
-///
-/// Panics if the index is beyond the length of the sentence.
-///
-/// Example: I want to prove that the word "trust" is in the sentence "You trust me, right?"
-/// So I call generate_proof("You trust me, right?", 1)
-/// And I get back the merkle root and list of intermediate nodes from which the
-/// root can be reconstructed.
+/*
+Generates a Merkle proof that one particular word is contained
+in the given sentence. You provide the sentence and the index of the word
+which you want a proof.
+
+This makes it so that we can make sure nodes aren't tampered with
+
+Panics if the index is beyond the length of the sentence.
+
+Example: I want to prove that the word "trust" is in the sentence "You trust me, right?"
+So I call generate_proof("You trust me, right?", 1)
+And I get back the merkle root and list of intermediate nodes from which the
+root can be reconstructed.
+*/
 pub fn generate_proof(sentence: &str, index: usize) -> (HashValue, MerkleProof) {
   // Preparation of leaf nodes
   let mut words: Vec<&str> = sentence.split_whitespace().collect();
@@ -148,8 +159,10 @@ pub fn generate_proof(sentence: &str, index: usize) -> (HashValue, MerkleProof) 
   (hashes[0], proof)
 }
 
-/// Checks whether the given word is contained in a sentence, without knowing the whole sentence.
-/// Rather we only know the merkle root of the sentence and a proof.
+/*
+Checks whether the given word is contained in a sentence, without knowing the whole sentence.
+Rather we only know the merkle root of the sentence and a proof.
+*/
 pub fn validate_proof(root: &HashValue, word: &str, proof: MerkleProof) -> bool {
   let mut hash = hash(&word);
 
@@ -164,8 +177,10 @@ pub fn validate_proof(root: &HashValue, word: &str, proof: MerkleProof) -> bool 
   hash == *root
 }
 
-/// A compact Merkle multiproof is used to prove multiple entries in a Merkle tree in a highly
-/// space-efficient manner.
+/*
+A compact Merkle multiproof is used to prove multiple entries in a Merkle tree in a highly
+space-efficient manner.
+*/
 #[derive(Debug, PartialEq, Eq)]
 pub struct CompactMerkleMultiProof {
   // The indices requested in the initial proof generation
@@ -175,63 +190,67 @@ pub struct CompactMerkleMultiProof {
   pub hashes: Vec<HashValue>,
 }
 
-/// Generate a compact multiproof that some words are contained in the given sentence. Returns the
-/// root of the merkle tree, and the compact multiproof. You provide the words at `indices` in the
-/// same order as within `indices` to verify the proof. `indices` is not necessarily sorted.
-///
-/// Panics if any index is beyond the length of the sentence, or any index is duplicated.
-///
-/// ## Explanation
-///
-/// To understand the compaction in a multiproof, see the following merkle tree. To verify a proof
-/// for the X's, only the entries marked with H are necessary. The rest can be calculated. Then, the
-/// hashes necessary are ordered based on the access order. The H's in the merkle tree are marked
-/// with their index in the output compact proof.
-///
-/// ```text
-///                                      O            
-///                                   /     \           
-///                                O           O     
-///                              /   \       /   \     
-///                             O    H_1   H_2    O  
-///                            / \   / \   / \   / \
-///                           X  X  O  O  O  O  X  H_0
-/// ```
-///
-/// The proof generation process would proceed similarly to a normal merkle proof generation, but we
-/// need to keep track of which hashes are known to the verifier by a certain height, and which need
-/// to be given to them.
-///
-/// In the leaf-node layer, the first pair of hashes are both
-/// known, and so no extra data is needed to go up the tree.  In the next two pairs of hashes,
-/// neither are known, and so the verifier does not need them. In the last set, the verifier only
-/// knows the left hash, and so the right hash must be provided.
-///
-/// In the second layer, the first and fourth hashes are known. The first pair is missing the right
-/// hash, which must be included in the proof. The second pair is missing the left hash, which also
-/// must be included.
-///
-/// In the final layer before the root, both hashes are known to the verifier, and so no further
-/// proof is needed.
-///
-/// The final proof for this example would be
-/// ```ignore
-/// CompactMerkleMultiProof {
-///     leaf_indices: [0, 1, 6],
-///     hashes: [H_0, H_1, H_2]
-/// }
-/// ```
+/*
+Generate a compact multiproof that some words are contained in the given sentence. Returns the
+root of the merkle tree, and the compact multiproof. You provide the words at `indices` in the
+same order as within `indices` to verify the proof. `indices` is not necessarily sorted.
+
+Panics if any index is beyond the length of the sentence, or any index is duplicated.
+
+## Explanation
+
+To understand the compaction in a multiproof, see the following merkle tree. To verify a proof
+for the X's, only the entries marked with H are necessary. The rest can be calculated. Then, the
+hashes necessary are ordered based on the access order. The H's in the merkle tree are marked
+with their index in the output compact proof.
+
+```text
+                                     O            
+                                  /     \           
+                               O           O     
+                             /   \       /   \     
+                            O    H_1   H_2    O  
+                           / \   / \   / \   / \
+                          X  X  O  O  O  O  X  H_0
+```
+
+The proof generation process would proceed similarly to a normal merkle proof generation, but we
+need to keep track of which hashes are known to the verifier by a certain height, and which need
+to be given to them.
+
+In the leaf-node layer, the first pair of hashes are both
+known, and so no extra data is needed to go up the tree.  In the next two pairs of hashes,
+neither are known, and so the verifier does not need them. In the last set, the verifier only
+knows the left hash, and so the right hash must be provided.
+
+In the second layer, the first and fourth hashes are known. The first pair is missing the right
+hash, which must be included in the proof. The second pair is missing the left hash, which also
+must be included.
+
+In the final layer before the root, both hashes are known to the verifier, and so no further
+proof is needed.
+
+The final proof for this example would be
+```ignore
+CompactMerkleMultiProof {
+    leaf_indices: [0, 1, 6],
+    hashes: [H_0, H_1, H_2]
+}
+```
+*/
 pub fn generate_compact_multiproof(
   sentence: &str,
   indices: Vec<usize>,
 ) -> (HashValue, CompactMerkleMultiProof) {
 
-  // For each of the indices, takes the index of its immediate neightbor,
-  // and stored the given element index and the neighboring index as a pair
-  // of indices
+  /*
+  For each of the indices, takes the index of its immediate neightbor,
+  and stored the given element index and the neighboring index as a pair
+  of indices
 
-  // Looks at the difference between pair indices and indices
-  // Appends the hash for given values to the multiproof
+  Looks at the difference between pair indices and indices
+  Appends the hash for given values to the multiproof
+  */
 
   let words: Vec<&str> = sentence.split_whitespace().collect();
 
@@ -291,9 +310,11 @@ pub fn generate_compact_multiproof(
   (root, proof)
 }
 
-/// Validate a compact merkle multiproof to check whether a list of words is contained in a sentence, based on the merkle root of the sentence.
-/// The words must be in the same order as the indices passed in to generate the multiproof.
-/// Duplicate indices in the proof are rejected by returning false.
+/*
+Validate a compact merkle multiproof to check whether a list of words is contained in a sentence, based on the merkle root of the sentence.
+The words must be in the same order as the indices passed in to generate the multiproof.
+Duplicate indices in the proof are rejected by returning false.
+*/
 pub fn validate_compact_multiproof(
   root: &HashValue,
   words: Vec<&str>,
@@ -399,12 +420,14 @@ pub fn validate_compact_multiproof(
   nodes[0] == *root
 }
 
-// Now that we have a normal and compact method to generate proofs, let's compare how
-// space-efficient the two are. The two functions below will be helpful for answering the questions
-// in the readme.
+/*
+Now that we have a normal and compact method to generate proofs, let's compare how
+space-efficient the two are. The two functions below will be helpful for answering the questions
+in the readme.
 
-/// Generate a space-separated string of `n` random 4-letter words. Use of this function is not
-/// mandatory.
+Generate a space-separated string of `n` random 4-letter words. Use of this function is not
+mandatory.
+*/
 pub fn string_of_random_words(n: usize) -> String {
   let mut ret = String::new();
   for i in 0..n {
@@ -416,13 +439,15 @@ pub fn string_of_random_words(n: usize) -> String {
   ret
 }
 
-/// Given a string of words, and the length of the words from which to generate proofs, generate
-/// proofs for `num_proofs` random indices in `[0, length)`.  Uses `rng_seed` as the rng seed, if
-/// replicability is desired.
-///
-/// Return the size of the compact multiproof, and then the combined size of the standard merkle proofs.
-///
-/// This function assumes the proof generation is correct, and does not validate them.
+/*
+Given a string of words, and the length of the words from which to generate proofs, generate
+proofs for `num_proofs` random indices in `[0, length)`.  Uses `rng_seed` as the rng seed, if
+replicability is desired.
+
+Return the size of the compact multiproof, and then the combined size of the standard merkle proofs.
+
+This function assumes the proof generation is correct, and does not validate them.
+*/
 pub fn compare_proof_sizes(
   words: &str,
   length: usize,
