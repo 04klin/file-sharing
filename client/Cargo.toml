@@ -8,3 +8,18 @@ reqwest = { version = "0.11", features = ["json"] } # High level HTTP client, ba
 tokio = { version = "1", features = ["full"] } # Asynchronous runtime providing core components for writing fast, non-blocking network applications.
 serde = { version = "1.0", features = ["derive"] } # For serialization, turning ds into json/yaml/toml and vice versa
 serde_json = "1.0" # Specific serialization dependency for json
+sha2 = "0.9"
+merkle_tree = { path = "../merkle_tree" }
+hex = "0.4.3"
+rand = { version = "0.8.5", features = ["alloc", "small_rng"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+random_word = "0.3.1"
+mockito = "0.31"
+
+[[bin]]
+name = "client"
+path = "src/main.rs"
+
+[[bin]]
+name = "setup"
+path = "src/setup.rs"
