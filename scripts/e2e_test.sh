@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -e
 
 # Generate sample files
