@@ -7,3 +7,4 @@ edition = "2024"
 hex = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 random_word = "0.3"
+serde = { version = "1.0", features = ["derive"] }

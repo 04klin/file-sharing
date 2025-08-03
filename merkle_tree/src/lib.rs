@@ -1,4 +1,4 @@
-// Suppress wornings (especially for early development)
+// Suppress warnings (especially for early development)
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
@@ -6,10 +6,15 @@
 use hex::encode;
 use rand::SeedableRng;
 use std::{
-  collections::hash_map::DefaultHasher,
+  collections::{
+    hash_map::DefaultHasher,
+    HashSet,
+    HashMap
+  },
   hash::{Hash, Hasher},
   mem,
 };
+use serde::{Serialize, Deserialize};
 /*
 We'll use Rust's built-in hashing which returns a u64 type.
 This alias just helps us understand when we're treating the number as a hash
@@ -55,7 +60,7 @@ pub fn concatenate_hash_values(left: HashValue, right: HashValue) -> HashValue {
 // calculate merkle root helper function
 fn calculate_merkle_root_helper(hashes: Vec<HashValue>) -> HashValue {
   match hashes.len() {
-    0 => 0,
+    0 => hash(&""),
     1 => hashes[0],
     _ => {
       let mut parent_level_hashes = Vec::new();
@@ -102,7 +107,7 @@ A representation of a sibling node along the Merkle path from the data
 to the root. It is necessary to specify which side the sibling is on
 so that the hash values can be combined in the same order.
 */
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum SiblingNode {
   Left(HashValue),
   Right(HashValue),
@@ -188,6 +193,8 @@ pub struct CompactMerkleMultiProof {
   // The additional hashes necessary for computing the proof, given in order from
   // lower to higher index, lower in the tree to higher in the tree.
   pub hashes: Vec<HashValue>,
+
+  pub leaf_count: usize,
 }
 
 /*
@@ -252,59 +259,71 @@ pub fn generate_compact_multiproof(
   Appends the hash for given values to the multiproof
   */
 
-  let words: Vec<&str> = sentence.split_whitespace().collect();
+  let mut words: Vec<&str> = sentence.split_whitespace().collect();
 
-  // Panics if any index is beyond the length of the sentence, or any index is duped.
+  let mut seen = HashSet::new();
+  // Panics if any index is beyond the length of the sentence, or any index is a duplicate.
   for &index in &indices {
     if index >= words.len() {
       panic!("Index {} is out of bounds", index);
     }
+    if !seen.insert(index) {
+      panic!("Duplicate index {} found when generating compact multiproof", index);
+    }
   }
 
-  // Hashes the words into leaf nodes
-  let mut nodes: Vec<HashValue> = words.iter().map(|&word| hash(&word)).collect();
-  let mut hashes = Vec::new();
-  let mut leaf_indices = indices.clone();
+  pad_base_layer(&mut words);
 
-  // Builds the tree, layer by layer, remembering which hashes are needed for the proof
-  while nodes.len() > 1 {
-    let mut next_level_nodes = Vec::new();
-    let mut next_level_indices = Vec::new();
+  let mut current_level_hashes: Vec<HashValue> = words.iter().map(|&word| hash(&word)).collect();
 
-    for i in 0..nodes.len() / 2 {
-      let left_child = i * 2;
-      let right_child = left_child + 1;
+  let leaf_count = current_level_hashes.len();
 
-      // Compute the new hash for this node
-      let new_hash = concatenate_hash_values(nodes[left_child], nodes[right_child]);
-      next_level_nodes.push(new_hash);
+  let mut proof_hashes = Vec::new();
+  // Use a HashSet for efficient O(1) lookups of which indices are "known".
+  let mut known_indices: HashSet<usize> = indices.iter().cloned().collect();
 
-      // If either child is in the index set, this node's index needs to be in the next level's index set
-      if leaf_indices.contains(&left_child) || leaf_indices.contains(&right_child) {
-        next_level_indices.push(i);
+  // Build the tree from the bottom up.
+  while current_level_hashes.len() > 1 {
+    let mut next_level_hashes = Vec::new();
+    let mut next_level_known_indices = HashSet::new();
+
+    for i in 0..(current_level_hashes.len() / 2) {
+      let left_child_idx = i * 2;
+      let right_child_idx = left_child_idx + 1;
+
+      let left_known = known_indices.contains(&left_child_idx);
+      let right_known = known_indices.contains(&right_child_idx);
+
+      // If we can compute a parent node because we know at least one child...
+      if left_known || right_known {
+        // ...then we mark the parent node as computable in the next level.
+        next_level_known_indices.insert(i);
+
+        // If we only know one child, the other one must be added to the proof.
+        if left_known && !right_known {
+          proof_hashes.push(current_level_hashes[right_child_idx]);
+        } else if !left_known && right_known {
+          proof_hashes.push(current_level_hashes[left_child_idx]);
+        }
       }
-
-      // If the right child's hash is known but the left child's is not, include the right child's hash in the proof
-      if leaf_indices.contains(&right_child) && !leaf_indices.contains(&left_child) {
-        hashes.push(nodes[left_child]);
-      }
-      // Vice versa
-      if leaf_indices.contains(&left_child) && !leaf_indices.contains(&right_child) {
-        hashes.push(nodes[right_child]);
-      }
+      
+      // We must compute all parent hashes to build the next level of the tree.
+      let parent_hash = concatenate_hash_values(
+        current_level_hashes[left_child_idx],
+        current_level_hashes[right_child_idx],
+      );
+      next_level_hashes.push(parent_hash);
     }
 
-    nodes = next_level_nodes;
-    leaf_indices = next_level_indices;
+    current_level_hashes = next_level_hashes;
+    known_indices = next_level_known_indices;
   }
 
-  // The root of the tree is the remaining node
-  let root = nodes[0];
-
-  // The proof consists of the original indices and the hashes we collected
+  let root = current_level_hashes[0];
   let proof = CompactMerkleMultiProof {
-    leaf_indices: indices,
-    hashes,
+    leaf_indices: indices, // The original, unsorted indices.
+    hashes: proof_hashes,
+    leaf_count,
   };
 
   (root, proof)
@@ -332,92 +351,76 @@ pub fn validate_compact_multiproof(
 
   Step 2. compare the given root with the root of the reconstructed tree
   */
-
-  // Step 1: Reconstruct the Merkle Tree from the given words and proof
-  let mut nodes: Vec<HashValue> = words.iter().map(|&word| hash(&word)).collect();
-  let mut leaf_indices = proof.leaf_indices;
-  let mut proof_hashes = proof.hashes;
-
-  // Check for duplicate indices
-  let mut seen = std::collections::HashSet::new();
-  for &index in &leaf_indices {
-    if !seen.insert(index) {
+  // Basic sanity checks.
+  if proof.leaf_indices.len() != words.len() {
       return false;
-    }
+  }
+  let mut seen_indices = HashSet::new();
+  if !proof.leaf_indices.iter().all(|&i| seen_indices.insert(i)) {
+      return false; // Reject proofs with duplicate indices.
   }
 
-  // Check if the lengths of leaf_indices and nodes don't match
-  if leaf_indices.len() != nodes.len() {
+  let mut proof_hashes_iter = proof.hashes.iter();
+  
+  // Use a map to store known nodes: `index -> hash`.
+  // Start by populating it with the leaf nodes from the words provided.
+  let mut known_nodes: HashMap<usize, HashValue> = proof
+      .leaf_indices
+      .iter()
+      .zip(words.iter())
+      .map(|(&index, &word)| (index, hash(&word)))
+      .collect();
+  
+  // Determine the original tree's leaf count
+  let mut num_nodes_at_level = proof.leaf_count;
+
+  // Climb the tree level by level until we reach the root.
+  while num_nodes_at_level > 1 {
+    let mut next_level_nodes = HashMap::new();
+    for i in 0..(num_nodes_at_level / 2) {
+      let left_idx = i * 2;
+      let right_idx = left_idx + 1;
+
+      let left_hash_opt = known_nodes.get(&left_idx);
+      let right_hash_opt = known_nodes.get(&right_idx);
+
+      let parent_hash = match (left_hash_opt, right_hash_opt) {
+        // Case 1: We know both children. Combine them.
+        (Some(l), Some(r)) => concatenate_hash_values(*l, *r),
+        // Case 2: We know left, need right from proof.
+        (Some(l), None) => {
+          match proof_hashes_iter.next() {
+            Some(r_proof) => concatenate_hash_values(*l, *r_proof),
+            None => return false, // Proof is missing a hash.
+          }
+        }
+        // Case 3: We know right, need left from proof.
+        (None, Some(r)) => {
+          match proof_hashes_iter.next() {
+            Some(l_proof) => concatenate_hash_values(*l_proof, *r),
+            None => return false, // Proof is missing a hash.
+          }
+        }
+        // Case 4: We don't know either child, so this branch isn't needed for the proof.
+        (None, None) => continue,
+      };
+      next_level_nodes.insert(i, parent_hash);
+    }
+    known_nodes = next_level_nodes;
+    num_nodes_at_level /= 2;
+  }
+  
+  // All proof hashes must have been consumed. If not, the proof is invalid.
+  if proof_hashes_iter.next().is_some() {
     return false;
   }
 
-  // Max leaf index to control loop
-  let mut max_leaf_index: usize = *leaf_indices.iter().max().unwrap();
-
-  // Process the levels of the Merkle Tree
-  while !proof_hashes.is_empty() || max_leaf_index > 1 {
-    let mut next_level_nodes = Vec::new();
-    let mut next_level_indices = Vec::new();
-
-    max_leaf_index = *leaf_indices.iter().max().unwrap_or(&0);
-
-    for i in 0..=max_leaf_index {
-      let left_child = i * 2;
-      let right_child = left_child + 1;
-
-      match (leaf_indices.contains(&left_child), leaf_indices.contains(&right_child)) {
-        (false, false) => continue,
-        (true, false) => {
-          // Ensure the left child index is valid
-          if let Some(left_child_index) = leaf_indices.iter().position(|&x| x == left_child) {
-            let left_hash = nodes[left_child_index];
-            if !proof_hashes.is_empty() {
-              let right_hash = proof_hashes.remove(0);
-              next_level_nodes.push(concatenate_hash_values(left_hash, right_hash));
-            } else {
-              next_level_indices.push(i);
-            }
-          } else {
-            // Invalid left child index
-            return false;
-          }
-        },
-        (false, true) => {
-          if let Some(right_child_index) = leaf_indices.iter().position(|&x| x == right_child) {
-            if !proof_hashes.is_empty() {
-              let left_hash = proof_hashes.remove(0);
-              let right_hash = nodes[right_child_index];
-              next_level_nodes.push(concatenate_hash_values(left_hash, right_hash));
-            } else {
-              return false;
-            }
-          } else {
-            return false;
-          }
-        },
-        (true, true) => {
-          if let (Some(left_child_index), Some(right_child_index)) = (
-            leaf_indices.iter().position(|&x| x == left_child),
-            leaf_indices.iter().position(|&x| x == right_child),
-          ) {
-            if left_child_index < nodes.len() && right_child_index < nodes.len() {
-              let left_hash = nodes[left_child_index];
-              let right_hash = nodes[right_child_index];
-              next_level_nodes.push(concatenate_hash_values(left_hash, right_hash));
-            } else {
-              return false;
-            }
-          } else {
-            return false;
-          }
-        },
-      };
-      next_level_indices.push(i);
-    }
-    nodes = next_level_nodes;
-    leaf_indices = next_level_indices;
+  // Finally, the calculated root (at index 0) must match the provided root.
+  match known_nodes.get(&0) {
+    Some(calculated_root) => calculated_root == root,
+    // This handles an edge case of an empty proof for an empty tree.
+    None => proof.leaf_count <= 1 && hash(&"") == *root,
   }
-  nodes[0] == *root
 }
 
 /*
@@ -462,16 +465,16 @@ pub fn compare_proof_sizes(
   let mut rng = rand::rngs::SmallRng::seed_from_u64(rng_seed);
   let indices = rand::seq::index::sample(&mut rng, length, num_proofs).into_vec();
   let (_, compact_proof) = generate_compact_multiproof(words, indices.clone());
-  // Manually calculate memory sizes
-  let compact_size = mem::size_of::<usize>() * compact_proof.leaf_indices.len()
-    + mem::size_of::<HashValue>() * compact_proof.hashes.len()
-    + mem::size_of::<Vec<usize>>() * 2;
+  
+  // More accurate size: sum of the size of elements in each vector.
+  let compact_size = compact_proof.leaf_indices.len() * mem::size_of::<usize>()
+    + compact_proof.hashes.len() * mem::size_of::<HashValue>();
 
   let mut individual_size = 0;
   for i in indices {
     let (_, proof) = generate_proof(words, i);
-    individual_size +=
-      mem::size_of::<Vec<usize>>() + mem::size_of::<SiblingNode>() * proof.len();
+    // The size of a single proof is the size of its SiblingNode elements.
+    individual_size += proof.len() * mem::size_of::<SiblingNode>();
   }
 
   (compact_size, individual_size)
@@ -583,6 +586,7 @@ mod tests {
           7640678380001893133,
           5879108026335697459,
         ],
+        leaf_count: 8,
       },
     );
     assert_eq!(expected, generate_compact_multiproof(sentence, indices));
@@ -599,6 +603,7 @@ mod tests {
           7640678380001893133,
           5879108026335697459,
         ],
+        leaf_count: 8,
       },
     );
     let words = vec!["Here's", "an", "for"];
@@ -696,7 +701,15 @@ mod additional_tests {
     let indices = vec![0, 4, 5, 6];
     let words = vec!["this", "words", "this", "sentence"];
     let (root, multiproof) = generate_compact_multiproof(sentence, indices.clone());
-    assert!(!validate_compact_multiproof(&root, words, multiproof));
+    assert!(validate_compact_multiproof(&root, words, multiproof));
+  }
+
+  #[test]
+  #[should_panic]
+  fn test_multiproof_with_duplicates_panics() {
+    let sentence = "this sentence has duplicate words this sentence";
+    let indices_with_duplicates = vec![0, 4, 5, 0];
+    generate_compact_multiproof(sentence, indices_with_duplicates);
   }
 
   #[test]
