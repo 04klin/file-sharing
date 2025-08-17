@@ -10,9 +10,12 @@ serde_json = "1.0" # Serialization for json
 tokio = { version = "1", features = ["full"] }
 hex = "0.4.3"
 rand = "0.8"
+merkle_tree = { path = "../merkle_tree" }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "macros"] }
+aws-config = "1.1"
+aws-sdk-s3 = "1.17"
+uuid = { version = "1", features = ["v4"] }
 
-[dependencies.merkle_tree]
-path = "../merkle_tree"
 
 [lib]
 name = "server"

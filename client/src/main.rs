@@ -14,15 +14,17 @@ struct ProofResponse {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let args: Vec<String> = env::args().collect();
-  if args.len() != 2 {
-    eprintln!("Usage: {} <server_url>", args[0]);
+  if args.len() < 3 {
+    eprintln!("Usage: {} <server_url> <file_path>", args[0]);
     std::process::exit(1);
   }
-  let server_url = &args[1];
+  let server_url: &String = &args[1];
+  let file_paths: &[String]  = &args[2..];
   println!("Server URL: {}", server_url);
+  println!("File paths: {:?}", file_paths);
 
-  let client = Client::new();
-  let files: Vec<String> = vec!["./data/file1.txt", "./data/file2.txt", "./data/file3.txt"]
+  let client: Client = Client::new();
+  let files: Vec<String> = file_paths
     .into_iter()
     .map(String::from)
     .collect();
@@ -30,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   upload_files_and_save_merkle_root(&client, &files, server_url).await?;
   delete_files(&files)?;
   download_and_verify_files(&client, &files, server_url).await?;
-  
+
   Ok(())
 }
 

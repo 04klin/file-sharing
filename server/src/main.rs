@@ -3,7 +3,7 @@ use server::{create_app_state, configure_services};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-  let state = create_app_state();
+  let state: actix_web::web::Data<server::AppState> = create_app_state();
 
   HttpServer::new(move || {
     App::new()

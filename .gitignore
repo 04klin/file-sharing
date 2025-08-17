@@ -2,3 +2,4 @@
 data
 merkle_root.txt
 selfnotes.txt
+.env
