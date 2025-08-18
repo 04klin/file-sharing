@@ -4,98 +4,171 @@ use std::sync::{Mutex, Arc};
 use std::collections::HashMap;
 use merkle_tree::{hash, generate_proof, validate_proof, HashValue, SiblingNode, MerkleProof};
 
-#[derive(Clone)]
-struct FileData {
-  content: String,
-  hash: HashValue,
-}
+use aws_sdk_s3::config::Region;
+use aws_config::SdkConfig;
+use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::Client as S3Client;
+use sqlx::{Pool, Postgres, FromRow};
 
 pub struct AppState {
-  pub files: Arc<Mutex<HashMap<String, FileData>>>,
-  pub merkle_root: Arc<Mutex<Option<HashValue>>>,
+  pub db_pool: Pool<Postgres>,
+  pub minio_client: S3Client, // Renamed for clarity
+  pub minio_bucket_name: String,
 }
 
-fn get_sorted_concatenated_hashes(files: &HashMap<String, FileData>) -> String {
-  let mut sorted_filenames: Vec<&String> = files.keys().collect();
-  sorted_filenames.sort();
-  sorted_filenames.iter()
-    .map(|&filename| files[filename].hash.clone().to_string())
-    .collect::<Vec<_>>()
-    .join(" ")
-  // let mut hashes = files.values().map(|data| data.hash.clone().to_string()).collect::<Vec<_>>().join(" ")
+// A struct to represent a row in your new 'files' table
+#[derive(Serialize, FromRow)]
+pub struct FileRecord {
+  pub id: i32,
+  pub filename: String,
+  pub file_hash: String,
 }
 
 #[post("/upload")]
 async fn upload(file: web::Json<HashMap<String, String>>, state: web::Data<AppState>) -> impl Responder {
-  let mut files = state.files.lock().unwrap();
-  let mut hashes: Vec<String> = Vec::new();
-
-  for (filename, content) in file.into_inner() {
+  // We get a single file, but your logic supports many. Let's assume one for simplicity.
+  if let Some((filename, content)) = file.into_inner().into_iter().next() {
     let file_hash = hash(&content);
-    println!("Content: {}", content);
-    files.insert(filename.clone(), FileData { content, hash: file_hash.clone() });
-    hashes.push(file_hash.to_string());
+    let bucket_name = &state.minio_bucket_name;
+
+    // 1. Upload the file content to MinIO
+    let body = ByteStream::from(content.into_bytes());
+    match state.minio_client
+      .put_object()
+      .bucket(bucket_name)
+      .key(&filename) // Use the filename as the object key in MinIO
+      .body(body)
+      .send()
+      .await
+      {
+        Ok(_) => {
+          // 2. If upload is successful, save metadata to PostgreSQL
+          let query_result = sqlx::query!(
+            "INSERT INTO files (filename, file_hash) VALUES ($1, $2) ON CONFLICT (filename) DO UPDATE SET file_hash = $2",
+            filename,
+            file_hash.to_string()
+          )
+          .execute(&state.db_pool)
+          .await;
+
+          match query_result {
+            Ok(_) => HttpResponse::Ok().json(format!("File '{}' uploaded successfully.", filename)),
+            Err(e) => {
+              eprintln!("Failed to insert file metadata into DB: {}", e);
+              HttpResponse::InternalServerError().body("Failed to save file metadata.")
+            }
+          }
+        },
+        Err(e) => {
+          eprintln!("Failed to upload to MinIO: {}", e);
+          HttpResponse::InternalServerError().body("Could not upload file.")
+        }
+      }
+  } else {
+    HttpResponse::BadRequest().body("No file data provided.")
   }
-
-  // Recalculate Merkle root
-  let concatenated_hashes = get_sorted_concatenated_hashes(&files);
-  println!("concatenated_hashes: {}", concatenated_hashes);
-  // TODO: it would be better to use calculate_merkle_root_rec(hashes) directly here
-  let root = merkle_tree::calculate_merkle_root(&concatenated_hashes);
-
-  let mut merkle_root = state.merkle_root.lock().unwrap();
-  *merkle_root = Some(root);
-
-  HttpResponse::Ok().json(format!("Root: {}", root))
 }
 
 #[get("/download/{filename}")]
-async fn download(file_name: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
-  let files = state.files.lock().unwrap();
-  let filename = file_name.as_str().rsplit('/').next().unwrap_or("");
-  if let Some(file_data) = files.get(filename) {
-    HttpResponse::Ok().json(&file_data.content)
-  } else {
-    HttpResponse::NotFound().finish()
+async fn download(path: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
+  let filename = path.into_inner();
+  
+  // 1. Check if the file metadata exists in the database
+  let query_result = sqlx::query_as::<_, FileRecord>("SELECT id, filename, file_hash FROM files WHERE filename = $1")
+    .bind(&filename)
+    .fetch_optional(&state.db_pool)
+    .await;
+
+  match query_result {
+    Ok(Some(_file_record)) => {
+      // 2. If it exists, fetch the object from MinIO
+      match state.minio_client
+        .get_object()
+        .bucket(&state.minio_bucket_name)
+        .key(&filename)
+        .send()
+        .await
+      {
+        Ok(output) => {
+          // 3. Collect the stream into a byte buffer
+          let body_bytes = match output.body.collect().await {
+            Ok(agg) => agg.into_bytes(),
+            Err(_) => return HttpResponse::InternalServerError().body("Failed to read file stream from storage."),
+          };
+
+          // 4. Send the collected bytes in the response body
+          HttpResponse::Ok()
+            .content_type("application/octet-stream")
+            .body(body_bytes)
+        },
+        Err(_) => HttpResponse::InternalServerError().body("Could not retrieve file from storage."),
+      }
+    },
+    Ok(None) => HttpResponse::NotFound().finish(),
+    Err(_) => HttpResponse::InternalServerError().body("Error querying database."),
   }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 struct ProofResponse {
   root: HashValue,
   proof: MerkleProof,
 }
 
 #[get("/proof/{filename}")]
-async fn proof(file_name: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
-  let files = state.files.lock().unwrap();
-  let filename = file_name.as_str().rsplit('/').next().unwrap_or("");
-  let merkle_root = state.merkle_root.lock().unwrap();
+async fn proof(path: web::Path<String>, state: web::Data<AppState>) -> impl Responder {
+  let filename = path.into_inner();
+
+  // 1. Fetch all file hashes from the database in a consistent order
+  let hashes_result = sqlx::query_scalar::<_, String>(
+    "SELECT file_hash FROM files ORDER BY filename ASC"
+  )
+  .fetch_all(&state.db_pool)
+  .await;
+
+  let all_hashes = match hashes_result {
+    Ok(hashes) => {
+      if hashes.is_empty() {
+        return HttpResponse::NotFound().body("No files exist to generate a proof.");
+      }
+      hashes
+    },
+    Err(_) => return HttpResponse::InternalServerError().body("Could not query file hashes."),
+  };
   
-  if let Some(file_data) = files.get(filename) {
-    if let Some(root) = &*merkle_root {
-      let concatenated_hashes: String = get_sorted_concatenated_hashes(&files);
-      println!("Concatenated hashes: {}", concatenated_hashes);
+  // 2. We also need to get the specific file's info to find its index
+  let file_record_result = sqlx::query_as::<_, FileRecord>(
+    "SELECT id, filename, file_hash FROM files WHERE filename = $1"
+  )
+  .bind(&filename)
+  .fetch_optional(&state.db_pool)
+  .await;
 
-      // Create a sorted list of filenames to determine the index
-      let mut sorted_filenames: Vec<&String> = files.keys().collect();
-      sorted_filenames.sort();
-      let index = sorted_filenames.iter().position(|&k| k == filename).unwrap();
+  if let Ok(Some(file_record)) = file_record_result {
+    // 3. Find the index of our file's hash in the sorted list
+    let index = all_hashes.iter().position(|h| h == &file_record.file_hash);
 
-      println!("Index: {}", index);
-      let (generated_root, proof) = generate_proof(&concatenated_hashes, index);
-      println!("Root: {:?}", generated_root);
-      println!("Proof: {:?}", proof);
+    if let Some(idx) = index {
+      // 4. Join the hashes into a single string for the merkle_tree library
+      let concatenated_hashes = all_hashes.join(" ");
+
+      // 5. Generate the proof and root on-demand
+      let (generated_root, proof) = generate_proof(&concatenated_hashes, idx);
       
-      let proof_response = ProofResponse {
+      let response = ProofResponse {
         root: generated_root,
         proof: proof,
       };
 
-      return HttpResponse::Ok().json(proof_response);
+      HttpResponse::Ok().json(response)
+    } else {
+      // This should theoretically not happen if the data is consistent
+      HttpResponse::InternalServerError().body("Hash not found in the sorted list.")
     }
+
+  } else {
+    HttpResponse::NotFound().body("File not found.")
   }
-  HttpResponse::NotFound().finish()
 }
 
 #[get("/hello")]
@@ -103,10 +176,11 @@ async fn hello() -> impl Responder {
   HttpResponse::Ok().body("Hello, World!")
 }
 
-pub fn create_app_state() -> web::Data<AppState> {
+pub fn create_app_state(pool: Pool<Postgres>, client: aws_sdk_s3::Client, bucket_name: &str) -> web::Data<AppState> {
   web::Data::new(AppState {
-    files: Arc::new(Mutex::new(HashMap::new())),
-    merkle_root: Arc::new(Mutex::new(None)),
+    db_pool: pool,
+    minio_client: client,
+    minio_bucket_name: bucket_name.to_string(),
   })
 }
 

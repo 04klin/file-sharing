@@ -12,10 +12,11 @@ hex = "0.4.3"
 rand = "0.8"
 merkle_tree = { path = "../merkle_tree" }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "macros"] }
-aws-config = "1.1"
-aws-sdk-s3 = "1.17"
 uuid = { version = "1", features = ["v4"] }
-
+chrono = "0.4"
+dotenvy = "0.15"
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1.103.0"
 
 [lib]
 name = "server"
